@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<body>
+    <h2>LexAI Chat Test</h2>
+    <input type="text" id="question" placeholder="Ask a legal question..." size="50">
+    <button onclick="askAI()">Ask AI</button>
+    
+    <h3>Answer:</h3>
+    <p id="answer" style="color: blue; font-weight: bold;">Waiting...</p>
+
+    <script>
+        async function askAI() {
+            const question = document.getElementById("question").value;
+            document.getElementById("answer").innerText = "Thinking...";
+
+            const response = await fetch("http://localhost:5000/api/chat/ask", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question: question })
+            });
+
+            const data = await response.json();
+            document.getElementById("answer").innerText = data.answer || data.message;
+        }
+    </script>
+</body>
+</html>
