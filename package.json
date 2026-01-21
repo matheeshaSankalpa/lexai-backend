@@ -18,13 +18,15 @@
     "@langchain/mongodb": "^1.1.0",
     "@langchain/ollama": "^1.1.0",
     "@langchain/textsplitters": "^1.0.1",
+    "axios": "^1.13.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "form-data": "^4.0.5",
     "langchain": "^1.2.0",
     "mongoose": "^9.0.1",
     "multer": "^2.0.2",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.4"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

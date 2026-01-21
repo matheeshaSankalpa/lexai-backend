@@ -1,9 +1,15 @@
 import express from 'express';
-import { askQuestion } from '../controllers/chatController';
+// 👇 Import the new functions here
+import { askQuestion, getHistory, updateChat, deleteChat } from '../controllers/chatController';
 
 const router = express.Router();
 
-// The Endpoint: POST /api/chat/ask
+// 1. Chat & History
 router.post('/ask', askQuestion);
+router.get('/history/:userId', getHistory);
+
+// 2. 👇 NEW: Pin, Rename, and Delete
+router.put('/history/:id', updateChat);    // Handles Pinning & Renaming
+router.delete('/history/:id', deleteChat); // Handles Deleting
 
 export default router;
