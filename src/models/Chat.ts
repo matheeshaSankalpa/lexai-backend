@@ -1,15 +1,21 @@
-import mongoose from 'mongoose';
+import mongoose, { Schema, Document } from 'mongoose';
 
-const ChatSchema = new mongoose.Schema({
-  userId: { type: String, required: true, index: true }, 
+export interface IChat extends Document {
+  userId: string;
+  question: string;
+  answer: string;
+  title?: string;
+  isPinned: boolean;
+  createdAt: Date;
+}
+
+const ChatSchema: Schema = new Schema({
+  userId: { type: String, required: true },
   question: { type: String, required: true },
   answer: { type: String, required: true },
-  
-  // 👇 NEW FIELDS ADDED
-  title: { type: String }, 
-  isPinned: { type: Boolean, default: false },
+  title: { type: String },
+  isPinned: { type: Boolean, default: false }
+}, { timestamps: true });
 
-  timestamp: { type: Date, default: Date.now }
-});
-
-export const Chat = mongoose.model('Chat', ChatSchema);
+// 👇 This line fixes the "no default export" error
+export default mongoose.model<IChat>('Chat', ChatSchema);

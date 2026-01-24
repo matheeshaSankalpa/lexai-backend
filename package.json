@@ -18,6 +18,7 @@
     "@langchain/mongodb": "^1.1.0",
     "@langchain/ollama": "^1.1.0",
     "@langchain/textsplitters": "^1.0.1",
+    "@types/nodemailer": "^7.0.5",
     "axios": "^1.13.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
@@ -26,7 +27,9 @@
     "langchain": "^1.2.0",
     "mongoose": "^9.0.1",
     "multer": "^2.0.2",
-    "pdf-parse": "^1.1.4"
+    "nodemailer": "^7.0.12",
+    "pdf-parse": "^1.1.4",
+    "stripe": "^20.2.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

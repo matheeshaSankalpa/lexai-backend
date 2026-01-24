@@ -1,131 +1,136 @@
-import { Request, Response } from "express";
-import ollama from "ollama";
-import Document from "../models/Document"; 
-import { Chat } from "../models/Chat"; 
+import { Request, Response } from 'express';
+import Chat from '../models/Chat';
+import Lawyer from '../models/Lawyer';
+import { generateAIResponse, searchLaws } from '../services/ragService';
+import { INTAKE_SYSTEM_PROMPT } from '../config/prompts';
 
-// 1. ASK QUESTION (Your original logic + Title support)
-export const askQuestion = async (req: Request, res: Response) => {
+// --- 1. ASK QUESTION ---
+export const askQuestion = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { question, userId } = req.body; 
-    
-    console.log("-------------------------------------------------");
-    console.log(`👤 User ID Received: ${userId}`);
-    console.log(`❓ Question: ${question}`);
+    const { userId, question, history } = req.body; 
 
-    // --- 1. Vector Search (Your working code) ---
-    const embeddingResponse = await ollama.embeddings({
-      model: "nomic-embed-text",
-      prompt: question,
-    });
+    // 1. RUN INTAKE INTERVIEW
+    const conversation = [
+      { role: "system", content: INTAKE_SYSTEM_PROMPT },
+      ...(history || []).map((msg: any) => ({ 
+          role: msg.sender === 'user' ? 'user' : 'assistant', 
+          content: msg.text 
+      })),
+      { role: "user", content: question }
+    ];
 
-    const documents = await Document.aggregate([
-      {
-        "$vectorSearch": {
-          "index": "vector_index", 
-          "path": "embedding",
-          "queryVector": embeddingResponse.embedding,
-          "numCandidates": 50,
-          "limit": 3 
-        }
-      },
-      { "$project": { "content": 1, "_id": 0 } }
-    ]);
+    let aiResponse = await generateAIResponse(conversation);
 
-    const contextText = documents.length > 0 
-      ? documents.map((doc: any) => doc.content).join("\n\n---\n\n")
-      : "No specific legal documents found.";
+    // 🛑 CLEANUP: Sometimes Gemma adds "Based on..." text. Remove it.
+    const jsonMatch = aiResponse.match(/\{[\s\S]*"status":\s*"COMPLETE"[\s\S]*\}/);
 
-    // --- 2. Generate Answer ---
-    const systemPrompt = `
-      You are LexAI, a legal assistant for Sri Lanka.
-      Context: "${contextText}"
-      INSTRUCTIONS:
-      - Use **Markdown** (Bold, Bullet points).
-      - Keep it professional.
-    `;
-
-    const response = await ollama.chat({
-      model: "llama3.1",
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: question }
-      ],
-      options: { temperature: 0.2 }
-    });
-
-    const aiAnswer = response.message.content;
-
-    // --- 3. SAVE TO DATABASE (Updated for new features) ---
-    let savedChat;
-    if (userId && userId !== "guest_user") {
-        try {
-            // We save the 'title' as the question initially
-            savedChat = await Chat.create({
-              userId: userId, 
-              question: question,
-              answer: aiAnswer,
-              title: question, // <--- Added this for renaming!
-              isPinned: false  // <--- Added this for pinning!
-            });
-            console.log("✅ SUCCESS: Chat Saved to MongoDB!"); 
-        } catch (dbError) {
-            console.error("❌ DATABASE ERROR: Could not save chat.", dbError);
-        }
-    } else {
-        console.log("⚠️ WARNING: User ID is missing or guest. Chat NOT saved.");
+    // --- SCENARIO A: STILL INTERVIEWING ---
+    if (!jsonMatch) {
+      // If AI hallucinates a report without JSON, force a retry question
+      if (aiResponse.includes("Situation Analysis") || aiResponse.includes("Applicable Laws")) {
+         aiResponse = "I need one more detail. Where is your workplace located (City)?";
+      }
+      res.json({ answer: aiResponse, recommendedLawyer: null });
+      return;
     }
 
-    res.json({ answer: aiAnswer, chatId: savedChat?._id });
+    // --- SCENARIO B: JSON DETECTED ---
+    const data = JSON.parse(jsonMatch[0]);
+    
+    // 🛑 HALLUCINATION CHECK (The logic that failed before)
+    // We check if "LOCATION" is still unknown or generic
+    if (data.location === "UNKNOWN" || data.location.toLowerCase().includes("location")) {
+       console.log("⚠️ Hallucination blocked. AI tried to finish without location.");
+       res.json({ 
+         answer: "I missed that. Could you please tell me which city you are in?", 
+         recommendedLawyer: null 
+       });
+       return;
+    }
+
+    // --- SCENARIO C: SUCCESS ---
+    console.log("✅ Interview Complete:", data);
+    const { summary, location, legal_query } = data;
+
+    // 1. Search Laws
+    const lawDocs = await searchLaws(legal_query);
+    const lawReferences = lawDocs.length > 0 ? lawDocs.join("\n\n") : "General Industrial Disputes Act.";
+
+    // 2. Find Lawyer
+    let specialization = "Civil Law";
+    if (summary.toLowerCase().includes("fired") || summary.toLowerCase().includes("termination")) {
+      specialization = "Labor Law";
+    }
+
+    const bestLawyer = await Lawyer.findOne({
+      isVerified: true,
+      location: { $regex: new RegExp(location, "i") },
+      specialization: { $regex: new RegExp(specialization, "i") }
+    }).select('name specialization location profileImage phone bio');
+
+    // 3. Generate CLEAN Final Output (New Prompt for Final Answer)
+    const finalPrompt = [
+      { role: "system", content: "You are a Senior Lawyer. Format your answer cleanly using the data below." },
+      { role: "user", content: `
+        CLIENT FACTS: ${summary}
+        LAWS FOUND: ${lawReferences}
+        
+        TASK: Write a response in this structure (No emojis):
+        
+        1. Situation Analysis
+        (Summarize the case in 2 sentences)
+
+        2. Applicable Laws
+        (List the specific acts found in LAWS FOUND)
+
+        3. Recommendation
+        (Advise to contact the lawyer below)
+      `}
+    ];
+
+    const finalAnswer = await generateAIResponse(finalPrompt);
+
+    await Chat.create({ userId, question, answer: finalAnswer });
+
+    res.json({
+      answer: finalAnswer,
+      recommendedLawyer: bestLawyer || null,
+      chatId: Date.now()
+    });
 
   } catch (error) {
-    console.error("❌ SERVER ERROR:", error);
-    res.status(500).json({ answer: "I encountered an error." });
+    console.error("Chat Error:", error);
+    res.status(500).json({ message: "System Error" });
   }
 };
 
-// 2. GET HISTORY (Updated to Sort by Pinned)
-export const getHistory = async (req: Request, res: Response) => {
+// ... (Keep getHistory, updateChat, deleteChat same as before) ...
+export const getHistory = async (req: Request, res: Response): Promise<void> => {
   try {
     const { userId } = req.params;
-    console.log(`📂 Fetching History for: ${userId}`);
-    
-    // Sort: Pinned items first (-1), then Newest Date (-1)
-    const history = await Chat.find({ userId }).sort({ isPinned: -1, timestamp: -1 });
-    
-    console.log(`📄 Found ${history.length} past chats.`);
+    const history = await Chat.find({ userId }).sort({ createdAt: -1 });
     res.json(history);
   } catch (error) {
-    console.error("❌ HISTORY ERROR:", error);
     res.status(500).json({ message: "Error fetching history" });
   }
 };
 
-// 3. UPDATE CHAT (Rename or Pin - NEW!)
-export const updateChat = async (req: Request, res: Response) => {
+export const updateChat = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const { title, isPinned } = req.body;
-
-    const updateData: any = {};
-    if (title !== undefined) updateData.title = title;
-    if (isPinned !== undefined) updateData.isPinned = isPinned;
-
-    const updatedChat = await Chat.findByIdAndUpdate(id, updateData, { new: true });
+    const updatedChat = await Chat.findByIdAndUpdate(id, req.body, { new: true });
     res.json(updatedChat);
   } catch (error) {
-    console.error("❌ UPDATE ERROR:", error);
-    res.status(500).json({ message: "Failed to update chat" });
+    res.status(500).json({ message: "Error updating chat" });
   }
 };
 
-// 4. DELETE CHAT (NEW!)
-export const deleteChat = async (req: Request, res: Response) => {
+export const deleteChat = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     await Chat.findByIdAndDelete(id);
-    res.json({ message: "Deleted successfully" });
+    res.json({ message: "Chat deleted" });
   } catch (error) {
-    console.error("❌ DELETE ERROR:", error);
-    res.status(500).json({ message: "Failed to delete chat" });
+    res.status(500).json({ message: "Error deleting chat" });
   }
 };
